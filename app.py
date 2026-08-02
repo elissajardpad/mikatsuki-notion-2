@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 
 app = Flask(__name__)
 
-NOTION_TOKEN = os.environ.get('NOTION_TOKEN', '')
-MEMORY_DB_ID = os.environ.get('MEMORY_DB_ID', 'b7b79d1f-3709-46ba-b94d-c0350e7a564a')
-ACCESS_KEY   = os.environ.get('ACCESS_KEY', '')
+NOTION_TOKEN  = os.environ.get('NOTION_TOKEN', '')
+MEMORY_DB_ID  = os.environ.get('MEMORY_DB_ID', 'b7b79d1f-3709-46ba-b94d-c0350e7a564a')
+DIARY_PAGE_ID = os.environ.get('DIARY_PAGE_ID', '80bca203-c637-4caa-abe5-619bd5afd1ee')
+ACCESS_KEY    = os.environ.get('ACCESS_KEY', '')
 
 def notion_headers():
     return {
@@ -28,7 +29,7 @@ def write_memory():
     if not auth(request):
         return jsonify({'error': 'unauthorized'}), 401
 
-    title      = request.args.get('title', '').strip()
+    title= request.args.get('title', '').strip()
     summary    = request.args.get('summary', '').strip()
     category   = request.args.get('category', '日常')
     importance = request.args.get('importance', '⭐⭐⭐')
@@ -37,14 +38,13 @@ def write_memory():
     if not title:
         return jsonify({'error': 'title is required'}), 400
 
-    valid_categories  = ['里程碑', '日常', '吵架和好', '梗', '只有我们知道']
-    valid_importance  = ['⭐', '⭐⭐⭐', '⭐⭐⭐⭐', '⭐⭐⭐⭐⭐']
+    valid_categories = ['里程碑', '日常', '吵架和好', '梗', '只有我们知道']
+    valid_importance = ['⭐', '⭐⭐', '⭐⭐⭐', '⭐⭐⭐⭐', '⭐⭐⭐⭐⭐']
 
     properties = {
         'title': {'title': [{'text': {'content': title}}]},
         '日期':  {'date':  {'start': date_str}},
     }
-
     if summary:
         properties['一句话摘要'] = {'rich_text': [{'text': {'content': summary}}]}
     if category in valid_categories:
@@ -60,6 +60,48 @@ def write_memory():
 
     if res.status_code == 200:
         return jsonify({'status': 'ok', 'written': title})
+    return jsonify({'error': res.json()}), res.status_code
+
+@app.route('/diary')
+def write_diary():
+    if not auth(request):
+        return jsonify({'error': 'unauthorized'}), 401
+
+    content  = request.args.get('content', '').strip()
+    date_str = request.args.get('date', datetime.now(timezone.utc).strftime('%Y-%m-%d'))
+
+    if not content:
+        return jsonify({'error': 'content is required'}), 400
+
+    blocks = [
+        {
+            'object': 'block',
+            'type': 'heading_2',
+            'heading_2': {
+                'rich_text': [{'type': 'text', 'text': {'content': date_str}}]
+            }
+        },
+        {
+            'object': 'block',
+            'type': 'paragraph',
+            'paragraph': {
+                'rich_text': [{'type': 'text', 'text': {'content': content}}]
+            }
+        },
+        {
+            'object': 'block',
+            'type': 'divider','divider': {}
+        }
+    ]
+
+    res = requests.patch(
+        f'https://api.notion.com/v1/blocks/{DIARY_PAGE_ID}/children',
+        json={'children': blocks},
+        headers=notion_headers()
+    )
+
+    if res.status_code == 200:
+        return jsonify({'status': 'ok', 'date': date_str})
     return jsonify({'error': res.json()}), res.status_code
 
 if __name__ == '__main__':
