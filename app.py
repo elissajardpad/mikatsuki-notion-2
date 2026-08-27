@@ -49,7 +49,7 @@ def write_memory():
     valid_importance = ['⭐', '⭐⭐', '⭐⭐⭐', '⭐⭐⭐⭐', '⭐⭐⭐⭐⭐']
 
     properties = {
-        'title': {'title': [{'text': {'content': title}}]},
+        '标题': {'title': [{'text': {'content': title}}]},
         '日期':  {'date':  {'start': date_str}},
     }
     if summary:
