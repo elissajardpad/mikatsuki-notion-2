@@ -294,11 +294,14 @@ toy_command = {
 }
 toy_lock = threading.Lock()
 
-@app.route('/toy/command', methods=['POST'])
+@app.route('/toy/command', methods=['GET', 'POST'])
 def toy_set_command():
     if not auth(request):
         return jsonify({'error': 'unauthorized'}), 401
-    data = request.get_json(force=True) or {}
+    if request.method == 'GET':
+        data = request.args
+    else:
+        data = request.get_json(force=True) or {}
     with toy_lock:
         toy_command['cmd'] = data.get('cmd', 'stop')
         toy_command['speed'] = float(data.get('speed', 0))
