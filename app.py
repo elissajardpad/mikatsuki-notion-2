@@ -86,8 +86,8 @@ def list_memory():
     for page in res.json().get('results', []):
         props = page.get('properties', {})
         title = ''
-        if props.get('title', {}).get('title'):
-            title = props['title']['title'][0]['text']['content']
+        if props.get('标题', {}).get('title'):
+            title = props['标题']['title'][0]['text']['content']
         summary = ''
         if props.get('一句话摘要', {}).get('rich_text'):
             summary = props['一句话摘要']['rich_text'][0]['text']['content']
