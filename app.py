@@ -282,5 +282,45 @@ def sleep_guard_event():
         'received_at': now_iso,
     })
     
+import threading
+
+# ── Toy Control ──────────────────────────────────────────────
+toy_command = {
+    'cmd': 'stop',
+    'speed': 0,
+    'pattern': 1,
+    'duration': 0,
+    'updated_at': datetime.now(timezone.utc).isoformat(),
+}
+toy_lock = threading.Lock()
+
+@app.route('/toy/command', methods=['POST'])
+def toy_set_command():
+    if not auth(request):
+        return jsonify({'error': 'unauthorized'}), 401
+    data = request.get_json(force=True) or {}
+    with toy_lock:
+        toy_command['cmd'] = data.get('cmd', 'stop')
+        toy_command['speed'] = float(data.get('speed', 0))
+        toy_command['pattern'] = int(data.get('pattern', 1))
+        toy_command['duration'] = int(data.get('duration', 0))
+        toy_command['updated_at'] = datetime.now(timezone.utc).isoformat()
+    return jsonify({'ok': True, 'state': toy_command})
+
+@app.route('/toy/poll')
+def toy_poll():
+    with toy_lock:
+        return jsonify(toy_command)
+
+@app.route('/toy/stop', methods=['POST'])
+def toy_stop():
+    if not auth(request):
+        return jsonify({'error': 'unauthorized'}), 401
+    with toy_lock:
+        toy_command['cmd'] = 'stop'
+        toy_command['speed'] = 0
+        toy_command['updated_at'] = datetime.now(timezone.utc).isoformat()
+    return jsonify({'ok': True})
+    
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
