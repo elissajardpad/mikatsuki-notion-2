@@ -5,6 +5,13 @@ from datetime import datetime, timezone
 
 app = Flask(__name__)
 
+@app.after_request
+def add_cors(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+    return response
+    
 NOTION_TOKEN  = os.environ.get('NOTION_TOKEN', '')
 MEMORY_DB_ID  = os.environ.get('MEMORY_DB_ID', 'b7b79d1f-3709-46ba-b94d-c0350e7a564a')
 DIARY_PAGE_ID = os.environ.get('DIARY_PAGE_ID', '80bca203-c637-4caa-abe5-619bd5afd1ee')
