@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🌙 toy</title>
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 30px 20px; min-height: 100vh; margin: 0; }
+  h1 { color: #c9a0dc; margin-bottom: 8px; }
+  .status { background: #16213e; border-radius: 12px; padding: 16px 24px; margin: 12px 0; width: 100%; max-width: 360px; box-sizing: border-box; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; background: #555; }
+  .dot.green { background: #4caf50; }
+  .dot.red { background: #f44336; }
+  .dot.yellow { background: #ffeb3b; }
+  button { background: #c9a0dc; color: #1a1a2e; border: none; border-radius: 10px; padding: 14px 28px; font-size: 16px; font-weight: bold; margin: 8px; cursor: pointer; width: 100%; max-width: 360px; }
+  button:disabled { background: #555; color: #999; }
+  .log { background: #0f0f23; border-radius: 8px; padding: 12px; font-size: 12px; color: #888; width: 100%; max-width: 360px; box-sizing: border-box; height: 120px; overflow-y: auto; margin-top: 16px; }
+  .cmd-box { background: #16213e; border-radius: 12px; padding: 16px; margin: 8px 0; width: 100%; max-width: 360px; box-sizing: border-box; font-size: 14px; }
+</style>
+</head>
+<body>
+<h1>🌙 三日月的控制台</h1>
+
+<div class="status">
+  <div><span class="dot" id="dot1"></span>拍打款：<span id="status1">未连接</span></div>
+  <div style="margin-top:8px"><span class="dot" id="dot2"></span>内入款：<span id="status2">未连接</span></div>
+</div>
+
+<div class="cmd-box">
+  当前指令：<span id="current-cmd">等待中…</span>
+</div>
+
+<button id="btn1" onclick="connectDevice(1)">连接拍打款</button>
+<button id="btn2" onclick="connectDevice(2)">连接内入款</button>
+<button id="btnStop" onclick="stopAll()" disabled>全部停止</button>
+
+<div class="log" id="log"></div>
+
+<script>
+const BRIDGE = 'https://mikatsuki-notion-2-production.up.railway.app';
+const KEY = '030mitsuki';
+const SERVICE_UUID = '0000ffe0-0000-1000-8000-00805f9b34fb';
+const CHAR_UUID    = '0000ffe1-0000-1000-8000-00805f9b34fb';
+
+let devices = [null, null];
+let chars = [null, null];
+let keepaliveTimers = [null, null];
+let lastCmd = null;
+let pollTimer = null;
+
+function log(msg) {
+  const el = document.getElementById('log');
+  const t = new Date().toLocaleTimeString('zh', {hour12: false});
+  el.innerHTML += `<div>[${t}] ${msg}</div>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(idx, state) {
+  const dot = document.getElementById('dot' + (idx+1));
+  const txt = document.getElementById('status' + (idx+1));
+  dot.className = 'dot ' + (state === 'connected' ? 'green' : state === 'connecting' ? 'yellow' : 'red');
+  txt.textContent = state === 'connected' ? '已连接' : state === 'connecting' ? '连接中…' : '未连接';
+}
+
+async function connectDevice(num) {
+  const idx = num - 1;
+  setStatus(idx, 'connecting');
+  log(`正在扫描设备${num}…`);
+  try {
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'SL278H' }],
+      optionalServices: [SERVICE_UUID]
+    });
+    devices[idx] = device;
+    device.addEventListener('gattserverdisconnected', () => {
+      log(`设备${num}断开，尝试重连…`);
+      setStatus(idx, 'disconnected');
+      setTimeout(() => reconnect(idx), 2000);
+    });
+    await doConnect(idx);
+    document.getElementById('btnStop').disabled = false;
+    if (!pollTimer) startPolling();
+  } catch(e) {
+    log(`连接失败：${e.message}`);
+    setStatus(idx, 'disconnected');
+  }
+}
+
+async function doConnect(idx) {
+  const device = devices[idx];
+  const server = await device.gatt.connect();
+  const service = await server.getPrimaryService(SERVICE_UUID);
+  chars[idx] = await service.getCharacteristic(CHAR_UUID);
+  setStatus(idx, 'connected');
+  log(`设备${idx+1}连接成功`);
+}
+
+async function reconnect(idx) {
+  if (!devices[idx]) return;
+  try { await doConnect(idx); } catch(e) {
+    log(`重连失败，5秒后再试`);
+    setTimeout(() => reconnect(idx), 5000);
+  }
+}
+
+function buildCmd(speed255) {
+  return new Uint8Array([0x55, 0x04, 0x00, 0x00, 0x01, speed255, 0xAA]);
+}
+
+function buildStop() {
+  return new Uint8Array([0x55, 0x04, 0x00, 0x00, 0x00, 0x00, 0xAA]);
+}
+
+async function sendToAll(bytes) {
+  for (let i = 0; i < 2; i++) {
+    if (chars[i]) {
+      try { await chars[i].writeValueWithoutResponse(bytes); }
+      catch(e) { log(`设备${i+1}写入失败：${e.message}`); }
+    }
+  }
+}
+
+function startKeepalive(speed255) {
+  stopKeepalive();
+  keepaliveTimers[0] = setInterval(() => sendToAll(buildCmd(speed255)), 1500);
+}
+
+function stopKeepalive() {
+  keepaliveTimers.forEach((t, i) => { if(t) clearInterval(t); keepaliveTimers[i] = null; });
+}
+
+async function stopAll() {
+  stopKeepalive();
+  await sendToAll(buildStop());
+  log('已停止');
+  document.getElementById('current-cmd').textContent = '停止';
+}
+
+async function applyCmd(cmd) {
+  if (cmd.cmd === 'stop') {
+    await stopAll();
+  } else {
+    const speed255 = Math.round(Math.min(1, Math.max(0, cmd.speed)) * 255);
+    await sendToAll(buildCmd(speed255));
+    startKeepalive(speed255);
+    const pct = Math.round(cmd.speed * 100);
+    log(`强度 ${pct}%`);
+    document.getElementById('current-cmd').textContent = `强度 ${pct}%`;
+    if (cmd.duration > 0) {
+      setTimeout(async () => { await stopAll(); }, cmd.duration * 1000);
+    }
+  }
+}
+
+async function startPolling() {
+  pollTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`${BRIDGE}/toy/poll`);
+      const cmd = await res.json();
+      if (!lastCmd || cmd.updated_at !== lastCmd.updated_at) {
+        lastCmd = cmd;
+        await applyCmd(cmd);
+      }
+    } catch(e) {}
+  }, 500);
+}
+</script>
+</body>
+</html>
