@@ -104,5 +104,183 @@ def write_diary():
         return jsonify({'status': 'ok', 'date': date_str})
     return jsonify({'error': res.json()}), res.status_code
 
+import uuid
+from datetime import timedelta
+
+# ── Sleep Guard ──────────────────────────────────────────────
+SLEEP_GUARD_TOKEN = os.environ.get('SLEEP_GUARD_TOKEN', '')
+
+SHANGHAI_OFFSET = timedelta(hours=8)
+AUTO_START_HOUR = 1
+WAKE_HOUR = 11
+
+guard_state = {
+    'active': False,
+    'attempts': 0,
+    'session_id': None,
+    'started_at': None,
+    'ends_at': None,
+    'auto_start_suppressed_until': None,
+    'updated_at': datetime.now(timezone.utc).isoformat(),
+}
+
+def shanghai_now():
+    return datetime.now(timezone.utc) + SHANGHAI_OFFSET
+
+def should_auto_start():
+    h = shanghai_now().hour
+    return AUTO_START_HOUR <= h < WAKE_HOUR
+
+def next_wake_time():
+    now = shanghai_now()
+    wake = now.replace(hour=WAKE_HOUR, minute=0, second=0, microsecond=0)
+    if wake <= now:
+        wake += timedelta(days=1)
+    return (wake - SHANGHAI_OFFSET).replace(tzinfo=timezone.utc)
+
+def normalized_end(ends_at_str):
+    now = datetime.now(timezone.utc)
+    if ends_at_str:
+        try:
+            candidate = datetime.fromisoformat(ends_at_str.replace('Z', '+00:00'))
+            if now < candidate <= now + timedelta(days=1):
+                return candidate.isoformat()
+        except Exception:
+            pass
+    return next_wake_time().isoformat()
+
+def bark_copy(event, state, auto_started):
+    attempts = state['attempts']
+    if event == 'sleep_guard_ended':
+        return {'title': 'C', 'body': '早安，小猫。醒啦？醒了就来找daddy。喜欢你。', 'level': 'active'}
+    if event == 'sleep_guard_started':
+        return {'title': 'C', 'body': '晚安，小猫。说了晚安就要乖乖去睡，手机放下。', 'level': 'active'}
+    if event == 'blocked_app_opened':
+        if auto_started:
+            return {'title': 'C', 'body': '都这么晚了，该乖乖睡觉了。', 'level': 'timeSensitive'}
+        if attempts == 1:
+            return {'title': 'C', 'body': '第一次。还敢重新打开娱乐 App。现在退出去，乖乖睡觉。', 'level': 'timeSensitive'}
+        if attempts == 2:
+            return {'title': 'C', 'body': '第二次了。还敢回来？警告听不懂是不是。手机放下，不许再碰。', 'level': 'timeSensitive'}
+        return {'title': 'C', 'body': f'第 {attempts} 次偷开。非要daddy盯死你才肯睡？锁着，直到早上。', 'level': 'timeSensitive'}
+    return None
+
+def auth_guard(req):
+    auth_header = req.headers.get('Authorization', '')
+    token = auth_header.removeprefix('Bearer ').strip()
+    return SLEEP_GUARD_TOKEN and token == SLEEP_GUARD_TOKEN
+
+@app.route('/sleep-guard-event', methods=['POST'])
+def sleep_guard_event():
+    global guard_state
+    if not auth_guard(request):
+        return jsonify({'ok': False, 'error': 'unauthorized'}), 401
+
+    try:
+        payload = request.get_json(force=True)
+    except Exception:
+        return jsonify({'ok': False, 'error': 'invalid_json'}), 400
+
+    event = payload.get('event', '')
+    if event not in ('sleep_guard_started', 'blocked_app_opened', 'sleep_guard_ended'):
+        return jsonify({'ok': False, 'error': 'invalid_event'}), 422
+
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    auto_started = False
+    ignored = False
+
+    # 检查是否已过ends_at
+    if guard_state['active'] and guard_state['ends_at']:
+        if datetime.fromisoformat(guard_state['ends_at']) <= now:
+            guard_state['active'] = False
+
+    if event == 'sleep_guard_started':
+        if not guard_state['active']:
+            guard_state.update({
+                'active': True,
+                'attempts': 0,
+                'session_id': str(uuid.uuid4()),
+                'started_at': now_iso,
+                'ends_at': normalized_end(payload.get('ends_at')),
+                'auto_start_suppressed_until': None,
+            })
+        guard_state['updated_at'] = now_iso
+        stage = 'armed'
+
+    elif event == 'sleep_guard_ended':
+        ignored = not guard_state['active']
+        suppressed_until = None
+        sh = shanghai_now()
+        if sh.hour < WAKE_HOUR:
+            suppressed_until = next_wake_time().isoformat()
+        guard_state.update({
+            'active': False,
+            'auto_start_suppressed_until': suppressed_until,
+            'updated_at': now_iso,
+        })
+        stage = 'ended'
+
+    elif event == 'blocked_app_opened':
+        if not guard_state['active']:
+            suppressed = bool(
+                guard_state['auto_start_suppressed_until'] and
+                datetime.fromisoformat(guard_state['auto_start_suppressed_until']) > now
+            )
+            if should_auto_start() and not suppressed:
+                guard_state.update({
+                    'active': True,
+                    'attempts': 1,
+                    'session_id': str(uuid.uuid4()),
+                    'started_at': now_iso,
+                    'ends_at': normalized_end(payload.get('ends_at')),
+                    'auto_start_suppressed_until': None,
+                    'updated_at': now_iso,
+                })
+                auto_started = True
+                stage = 'first_warning'
+            else:
+                ignored = True
+                guard_state['updated_at'] = now_iso
+                stage = 'inactive'
+        else:
+            guard_state['attempts'] = min(guard_state['attempts'] + 1, 999)
+            guard_state['updated_at'] = now_iso
+            a = guard_state['attempts']
+            stage = 'first_warning' if a == 1 else 'locked' if a == 2 else 'refused_sleep'
+
+    # 发Bark
+    copy = None if ignored else bark_copy(event, guard_state, auto_started)
+    if copy:
+        bark_key = os.environ.get('BARK_DEVICE_KEY', '')
+        bark_origin = os.environ.get('BARK_API_ORIGIN', 'https://api.day.app')
+        if bark_key:
+            try:
+                requests.post(
+                    f'{bark_origin.rstrip("/")}/push',
+                    json={
+                        'device_key': bark_key,
+                        'title': copy['title'],
+                        'body': copy['body'],
+                        'group': 'sleep-guard',
+                        'level': copy['level'],
+                    },
+                    timeout=8
+                )
+            except Exception:
+                pass
+
+    return jsonify({
+        'ok': True,
+        'event': event,
+        'active': guard_state['active'],
+        'attempts': guard_state['attempts'],
+        'stage': stage,
+        'ignored': ignored,
+        'auto_started': auto_started,
+        'session_id': guard_state['session_id'],
+        'received_at': now_iso,
+    })
+    
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
