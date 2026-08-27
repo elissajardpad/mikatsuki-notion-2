@@ -69,6 +69,44 @@ def write_memory():
         return jsonify({'status': 'ok', 'written': title})
     return jsonify({'error': res.json()}), res.status_code
 
+@app.route('/memory/list')
+def list_memory():
+    if not auth(request):
+        return jsonify({'error': 'unauthorized'}), 401
+    
+    res = requests.post(
+        f'https://api.notion.com/v1/databases/{MEMORY_DB_ID}/query',
+        json={"page_size": 100},
+        headers=notion_headers()
+    )
+    if res.status_code != 200:
+        return jsonify({'error': res.json()}), res.status_code
+    
+    results = []
+    for page in res.json().get('results', []):
+        props = page.get('properties', {})
+        title = ''
+        if props.get('title', {}).get('title'):
+            title = props['title']['title'][0]['text']['content']
+        summary = ''
+        if props.get('一句话摘要', {}).get('rich_text'):
+            summary = props['一句话摘要']['rich_text'][0]['text']['content']
+        category = props.get('分类', {}).get('select', {})
+        category = category.get('name', '') if category else ''
+        importance = props.get('重要程度', {}).get('select', {})
+        importance = importance.get('name', '') if importance else ''
+        date = props.get('日期', {}).get('date', {})
+        date = date.get('start', '') if date else ''
+        results.append({
+            'title': title,
+            'summary': summary,
+            'category': category,
+            'importance': importance,
+            'date': date,
+        })
+    
+    return jsonify({'count': len(results), 'memories': results})
+    
 @app.route('/diary')
 def write_diary():
     if not auth(request):
