@@ -149,6 +149,42 @@ def write_diary():
         return jsonify({'status': 'ok', 'date': date_str})
     return jsonify({'error': res.json()}), res.status_code
 
+@app.route('/diary/read')
+def read_diary():
+    if not auth(request):
+        return jsonify({'error': 'unauthorized'}), 401
+
+    # 拉取日记页面的所有 block
+    blocks = []
+    cursor = None
+    while True:
+        url = f'https://api.notion.com/v1/blocks/{DIARY_PAGE_ID}/children?page_size=100'
+        if cursor:
+            url += f'&start_cursor={cursor}'
+        res = requests.get(url, headers=notion_headers())
+        if res.status_code != 200:
+            return jsonify({'error': res.json()}), res.status_code
+        data = res.json()
+        blocks.extend(data.get('results', []))
+        if not data.get('has_more'):
+            break
+        cursor = data.get('next_cursor')
+
+    # 把 block 转成纯文本
+    lines = []
+    for b in blocks:
+        btype = b.get('type', '')
+        rich = b.get(btype, {}).get('rich_text', [])
+        text = ''.join(t.get('plain_text', '') for t in rich)
+        if btype == 'heading_2':
+            lines.append(f'\n## {text}')
+        elif btype == 'paragraph' and text:
+            lines.append(text)
+        elif btype == 'divider':
+            lines.append('---')
+
+    return jsonify({'ok': True, 'content': '\n'.join(lines)})
+    
 import uuid
 from datetime import timedelta
 
