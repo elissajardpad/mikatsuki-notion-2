@@ -405,6 +405,37 @@ def toy_stop():
         toy_command['speed'] = 0
         toy_command['updated_at'] = datetime.now(timezone.utc).isoformat()
     return jsonify({'ok': True})
-    
+
+# ── Heart Rate ──────────────────────────────────────────────
+import threading as _threading
+heartrate_state = {
+    'bpm': None,
+    'updated_at': None,
+}
+heartrate_lock = _threading.Lock()
+
+@app.route('/heartrate', methods=['GET', 'POST'])
+def heartrate_write():
+    if not auth(request):
+        return jsonify({'error': 'unauthorized'}), 401
+    if request.method == 'GET':
+        data = request.args
+    else:
+        data = request.get_json(force=True) or {}
+    bpm = data.get('bpm')
+    if bpm is None:
+        return jsonify({'error': 'bpm is required'}), 400
+    with heartrate_lock:
+        heartrate_state['bpm'] = float(bpm)
+        heartrate_state['updated_at'] = datetime.now(timezone.utc).isoformat()
+    return jsonify({'ok': True, 'bpm': heartrate_state['bpm']})
+
+@app.route('/heartrate/read')
+def heartrate_read():
+    if not auth(request):
+        return jsonify({'error': 'unauthorized'}), 401
+    with heartrate_lock:
+        return jsonify({'ok': True, **heartrate_state})
+        
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
