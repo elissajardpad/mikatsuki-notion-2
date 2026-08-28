@@ -423,7 +423,7 @@ def heartrate_write():
     else:
         data = request.get_json(force=True) or {}
     bpm = data.get('bpm')
-    if bpm is None:
+    if bpm is None or str(bpm).strip() == '':
         return jsonify({'error': 'bpm is required'}), 400
     with heartrate_lock:
         heartrate_state['bpm'] = float(bpm)
