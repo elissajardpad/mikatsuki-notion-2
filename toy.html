@@ -47,6 +47,7 @@ let chars = [null, null];
 let keepaliveTimers = [null, null];
 let lastCmd = null;
 let pollTimer = null;
+let patternTimer = null;
 
 function log(msg) {
   const el = document.getElementById('log');
@@ -129,25 +130,98 @@ function stopKeepalive() {
   keepaliveTimers.forEach((t, i) => { if(t) clearInterval(t); keepaliveTimers[i] = null; });
 }
 
+function clearPattern() {
+  if (patternTimer) { clearTimeout(patternTimer); clearInterval(patternTimer); patternTimer = null; }
+}
+
 async function stopAll() {
+  clearPattern();
   stopKeepalive();
   await sendToAll(buildStop());
   log('已停止');
   document.getElementById('current-cmd').textContent = '停止';
 }
 
+async function applyPattern(pattern, speed255) {
+  clearPattern();
+  switch (pattern) {
+    case 1:
+    default: {
+      // 持续震动
+      await sendToAll(buildCmd(speed255));
+      startKeepalive(speed255);
+      break;
+    }
+    case 2: {
+      // 慢脉冲：1s开 0.5s停
+      let phase = true;
+      const tick = async () => {
+        await sendToAll(phase ? buildCmd(speed255) : buildStop());
+        patternTimer = setTimeout(tick, phase ? 1000 : 500);
+        phase = !phase;
+      };
+      await tick();
+      break;
+    }
+    case 3: {
+      // 快脉冲：0.3s开 0.2s停
+      let phase = true;
+      const tick = async () => {
+        await sendToAll(phase ? buildCmd(speed255) : buildStop());
+        patternTimer = setTimeout(tick, phase ? 300 : 200);
+        phase = !phase;
+      };
+      await tick();
+      break;
+    }
+    case 4: {
+      // 渐强循环：从0慢慢升到speed255，然后归零重来
+      let cur = 0;
+      const step = Math.max(8, Math.round(speed255 / 20));
+      const tick = async () => {
+        await sendToAll(buildCmd(cur));
+        cur += step;
+        if (cur > speed255) cur = 0;
+        patternTimer = setTimeout(tick, 200);
+      };
+      await tick();
+      break;
+    }
+    case 5: {
+      // 心跳：咚-咚-（停）节奏
+      const beats = [
+        [speed255, 120], [0, 100], [speed255, 120], [0, 700]
+      ];
+      let i = 0;
+      const tick = async () => {
+        const [val, dur] = beats[i % beats.length];
+        await sendToAll(val ? buildCmd(val) : buildStop());
+        i++;
+        patternTimer = setTimeout(tick, dur);
+      };
+      await tick();
+      break;
+    }
+  }
+}
+
+const PATTERN_NAMES = {1:'持续震动', 2:'慢脉冲', 3:'快脉冲', 4:'渐强循环', 5:'心跳'};
+
 async function applyCmd(cmd) {
+  clearPattern();
+  stopKeepalive();
   if (cmd.cmd === 'stop') {
     await stopAll();
   } else {
     const speed255 = Math.round(Math.min(1, Math.max(0, cmd.speed)) * 255);
-    await sendToAll(buildCmd(speed255));
-    startKeepalive(speed255);
+    const pattern = parseInt(cmd.pattern) || 1;
     const pct = Math.round(cmd.speed * 100);
-    log(`强度 ${pct}%`);
-    document.getElementById('current-cmd').textContent = `强度 ${pct}%`;
+    const name = PATTERN_NAMES[pattern] || `模式${pattern}`;
+    log(`${name} 强度${pct}%`);
+    document.getElementById('current-cmd').textContent = `${name} · ${pct}%`;
+    await applyPattern(pattern, speed255);
     if (cmd.duration > 0) {
-      setTimeout(async () => { await stopAll(); }, cmd.duration * 1000);
+      setTimeout(async () => { clearPattern(); await stopAll(); }, cmd.duration * 1000);
     }
   }
 }
